@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -68,7 +69,9 @@ func TestLoopStopResponse(t *testing.T) {
 	var types []EventType
 	emit.Subscribe(func(ev Event) { types = append(types, ev.Type) })
 
-	runner.LoopCtx(context.Background(), mgr, "", "hi")
+	if err := runner.LoopCtx(context.Background(), mgr, "", "hi"); err != nil {
+		t.Fatal(err)
+	}
 
 	if mgr.Len() < 2 {
 		t.Fatalf("expected user+assistant messages, got %d", mgr.Len())
@@ -101,7 +104,9 @@ func TestLoopAttemptCompletion(t *testing.T) {
 	var types []EventType
 	emit.Subscribe(func(ev Event) { types = append(types, ev.Type) })
 
-	runner.LoopCtx(context.Background(), mgr, "", "finish task")
+	if err := runner.LoopCtx(context.Background(), mgr, "", "finish task"); err != nil {
+		t.Fatal(err)
+	}
 
 	assertHasEvents(t, types, EventToolStart, EventToolEnd, EventRunEnd)
 	if mgr.Len() < 3 {
@@ -122,15 +127,17 @@ func TestLoopContextCancel(t *testing.T) {
 	emit.Subscribe(func(ev Event) { types = append(types, ev.Type) })
 
 	runCtx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
-		runner.LoopCtx(runCtx, mgr, "", "slow")
-		close(done)
+		done <- runner.LoopCtx(runCtx, mgr, "", "slow")
 	}()
 
 	time.Sleep(30 * time.Millisecond)
 	cancel()
-	<-done
+	err := <-done
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got %v", err)
+	}
 
 	assertHasEvents(t, types, EventWarn)
 }
