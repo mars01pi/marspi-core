@@ -135,9 +135,16 @@ func (t *mcpTool) Preview(args map[string]any) string {
 	return "[" + t.server + "] " + t.rawName + " " + truncateString(string(b), 120)
 }
 func (t *mcpTool) Run(args map[string]any) tool.Result {
-	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	return t.RunCtx(context.Background(), tool.ExecutionMeta{}, args)
+}
+
+func (t *mcpTool) RunCtx(ctx context.Context, _ tool.ExecutionMeta, args map[string]any) tool.Result {
+	if err := ctx.Err(); err != nil {
+		return tool.Fail("mcp call canceled: " + err.Error())
+	}
+	runCtx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
-	res, err := t.session.CallTool(ctx, &sdkmcp.CallToolParams{Name: t.rawName, Arguments: args})
+	res, err := t.session.CallTool(runCtx, &sdkmcp.CallToolParams{Name: t.rawName, Arguments: args})
 	if err != nil {
 		return tool.Fail("mcp call failed: " + err.Error())
 	}

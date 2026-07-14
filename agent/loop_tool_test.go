@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 
 	"github.com/mars/marspi-core/config"
@@ -48,7 +49,7 @@ func TestExecuteToolEmitsEvents(t *testing.T) {
 	e.Subscribe(func(ev Event) { events = append(events, ev) })
 
 	r := &Runner{Registry: reg, Events: e}
-	result, done := r.executeTool(1, llm.ToolCall{
+	result, done := r.executeTool(context.Background(), 1, llm.ToolCall{
 		ID: "c1", Name: "echo_tool", Arguments: map[string]any{"msg": "hi"},
 	})
 	if done {
@@ -78,7 +79,7 @@ func TestExecuteToolInvalidArgs(t *testing.T) {
 	e.Subscribe(func(ev Event) { events = append(events, ev) })
 
 	r := &Runner{Registry: reg, Events: e}
-	result, _ := r.executeTool(1, llm.ToolCall{ID: "c1", Name: "", Arguments: map[string]any{}})
+	result, _ := r.executeTool(context.Background(), 1, llm.ToolCall{ID: "c1", Name: "", Arguments: map[string]any{}})
 	if result == nil {
 		t.Fatal("expected error result")
 	}

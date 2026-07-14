@@ -1,12 +1,14 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/mars/marspi-core/llm"
+	"github.com/mars/marspi-core/tool"
 )
 
 func validateToolCall(tc llm.ToolCall) error {
@@ -28,7 +30,7 @@ func validateToolCall(tc llm.ToolCall) error {
 }
 
 // executeTool 校验、执行单个 tool call 并 emit tool_* 事件；completed 表示 attempt_completion 结束 loop。
-func (r *Runner) executeTool(iteration int, tc llm.ToolCall) (result any, completed bool) {
+func (r *Runner) executeTool(runCtx context.Context, iteration int, tc llm.ToolCall) (result any, completed bool) {
 	preview := ""
 	if t, ok := r.Registry.Get(tc.Name); ok {
 		preview = t.Preview(tc.Arguments)
@@ -56,8 +58,16 @@ func (r *Runner) executeTool(iteration int, tc llm.ToolCall) (result any, comple
 		return errResult, false
 	}
 
-	content, meta := r.Registry.ExecuteQuiet(tc.Name, tc.Arguments)
-	ok := meta.Success && !meta.Denied && toolResultOK(content)
+	meta := tool.ExecutionMeta{ToolCallID: tc.ID}
+	if r.ToolMeta != nil {
+		meta = r.ToolMeta(runCtx, tc.Name, tc.ID)
+		if meta.ToolCallID == "" {
+			meta.ToolCallID = tc.ID
+		}
+	}
+
+	content, runMeta := r.Registry.ExecuteQuietCtx(runCtx, meta, tc.Name, tc.Arguments)
+	ok := runMeta.Success && !runMeta.Denied && !runMeta.Canceled && toolResultOK(content)
 
 	r.emit(Event{
 		Type:            EventToolEnd,
@@ -65,8 +75,8 @@ func (r *Runner) executeTool(iteration int, tc llm.ToolCall) (result any, comple
 		ToolName:        tc.Name,
 		ToolCallID:      tc.ID,
 		ToolOK:          ok,
-		ToolDenied:      meta.Denied,
-		ToolResultLines: meta.PreviewLines,
+		ToolDenied:      runMeta.Denied,
+		ToolResultLines: runMeta.PreviewLines,
 	})
 
 	if tc.Name == "attempt_completion" {

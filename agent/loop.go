@@ -23,6 +23,9 @@ type Runner struct {
 	MaxContext int
 	MaxIter    int
 	Stream     bool // MARS_STREAM
+	// ToolMeta optionally builds execution metadata for each tool call.
+	// If nil, tools still receive runCtx cancellation via ExecuteQuietCtx.
+	ToolMeta func(ctx context.Context, toolName, toolCallID string) tool.ExecutionMeta
 }
 
 // Loop 运行一次完整的 agent_loop：追加用户输入，迭代调用模型与工具直至结束。
@@ -109,7 +112,7 @@ func (r *Runner) LoopCtx(runCtx context.Context, ctx *agentctx.Manager, ctxFileP
 					break
 				}
 				logx.Debugf("tool call: %s", tc.Name)
-				result, done := r.executeTool(iteration, tc)
+				result, done := r.executeTool(runCtx, iteration, tc)
 				ctx.AppendTool(tc.ID, tc.Name, result)
 				if done {
 					completed = true

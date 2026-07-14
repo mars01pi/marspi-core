@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
@@ -9,6 +10,7 @@ import (
 type RunMeta struct {
 	Success      bool
 	Denied       bool
+	Canceled     bool
 	PreviewLines []string
 }
 
@@ -22,6 +24,17 @@ func (r *Registry) Execute(name string, args map[string]any) any {
 
 // ExecuteQuiet 执行工具但不输出展示（由 agent 事件 / ConsoleSink 负责渲染）。
 func (r *Registry) ExecuteQuiet(name string, args map[string]any) (content any, meta RunMeta) {
+	return r.ExecuteQuietCtx(context.Background(), ExecutionMeta{}, name, args)
+}
+
+// ExecuteQuietCtx runs a tool with cancellation context and optional metadata.
+// If the tool implements ContextualTool, RunCtx is used; otherwise Run(args).
+func (r *Registry) ExecuteQuietCtx(ctx context.Context, em ExecutionMeta, name string, args map[string]any) (content any, meta RunMeta) {
+	if err := ctx.Err(); err != nil {
+		msg := "error: tool canceled: " + err.Error()
+		return msg, RunMeta{Success: false, Canceled: true, PreviewLines: []string{msg}}
+	}
+
 	t, ok := r.Get(name)
 	if !ok {
 		msg := "run tool " + name + " error: unknown tool"
@@ -38,10 +51,22 @@ func (r *Registry) ExecuteQuiet(name string, args map[string]any) (content any, 
 	if !t.Confirm(args) {
 		return "error: User denied action", RunMeta{Denied: true}
 	}
+	if err := ctx.Err(); err != nil {
+		msg := "error: tool canceled: " + err.Error()
+		return msg, RunMeta{Success: false, Canceled: true, PreviewLines: []string{msg}}
+	}
+
 	if t.UseSpinner() {
 		r.host.StartSpinner("Running...")
 	}
-	result := t.Run(args)
+
+	var result Result
+	if ct, ok := t.(ContextualTool); ok {
+		result = ct.RunCtx(ctx, em, args)
+	} else {
+		result = t.Run(args)
+	}
+
 	if t.UseSpinner() {
 		r.host.EndSpinner()
 	}
