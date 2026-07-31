@@ -31,6 +31,7 @@ func NewSystem(cfg *config.Config, skills *skill.Manager) *System {
 		{"safety", safetySection()},
 		{"builtin_rules", builtinRules()},
 		{"tool_guidance", toolGuidance()},
+		{"knowledge_guidance", knowledgeGuidance()},
 		{"skills_guidance", s.skillsGuidance()},
 		{"memory", s.userRules()},
 		{"environment", s.environment()},
@@ -58,10 +59,11 @@ func baseIntro() string {
 func toolGuidance() string {
 	return "## Tool Selection\n\n" +
 		"Use the dedicated tool when one exists (read/write/edit/search/grep/search_memory/" +
-		"append_memory/attempt_completion). Reach for **bash** only when no dedicated tool fits.\n" +
+		"append_memory/search_knowledge/attempt_completion). Reach for **bash** only when no dedicated tool fits.\n" +
 		"Use **edit** (not write) for small in-place changes; ensure `old` is unique or pass `all=true`.\n" +
-		"Use **search_memory** for long-term knowledge, **append_memory** only for " +
-		"architecture decisions / persistent preferences (not ephemeral context).\n" +
+		"Use **search_memory** for YOUR long-term notes (preferences / past decisions). " +
+		"Use **search_knowledge** for shared knowledge bases (SOP / rules / dossiers). " +
+		"Use **append_memory** only for architecture decisions / persistent preferences (not ephemeral context).\n" +
 		"Use **view_image** for screenshots, UI mockups, error screens, and diagrams. " +
 		"The `read` tool auto-routes image files (.png/.jpg/.jpeg/.gif/.webp) to vision, " +
 		"but call `view_image` directly when the path is computed or generated.\n" +
@@ -69,6 +71,15 @@ func toolGuidance() string {
 		"beyond the local filesystem. Requires the `MARS_SEARCH_API_KEY` env var. " +
 		"Use sparingly — at most 3 times per user query to avoid excessive API calls.\n" +
 		"Always finish with **attempt_completion** to present the final result.\n\n"
+}
+
+func knowledgeGuidance() string {
+	return "## Knowledge Base (RAG)\n\n" +
+		"When the answer depends on internal policies, SOP, fee/cancel/service rules, or case dossiers:\n" +
+		"1. Call **search_knowledge** before asserting grounds.\n" +
+		"2. Cite returned markers like `[id=... | source=...]` in the final answer.\n" +
+		"3. Do not invent clauses that were not retrieved.\n" +
+		"4. Do not confuse knowledge-base hits with **search_memory** personal notes.\n\n"
 }
 
 func (s *System) skillsGuidance() string {

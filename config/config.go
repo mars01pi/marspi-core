@@ -29,6 +29,11 @@ type Config struct {
 	SearchKey  string // MARS_SEARCH_API_KEY，web_search 用
 	MCPEnabled bool   // MARS_MCP: on/off，开启 MCP 工具加载
 
+	RAGURL    string // MARS_RAG_URL，知识库检索 HTTP 端点
+	RAGAPIKey string // MARS_RAG_API_KEY，可选 Bearer
+	RAGMode   string // MARS_RAG_MODE: tool | inject | hybrid（默认 tool）
+	RAGTopK   int    // MARS_RAG_TOP_K，默认 5
+
 	ProjectRoot   string // 当前工作目录
 	BasePersist   string // <root>/.marspicli
 	SessionDir    string // <root>/.marspicli/session
@@ -88,6 +93,11 @@ func Load() *Config {
 		SearchKey:  os.Getenv("MARS_SEARCH_API_KEY"),
 		MCPEnabled: envBool("MARS_MCP", true),
 
+		RAGURL:    strings.TrimSpace(os.Getenv("MARS_RAG_URL")),
+		RAGAPIKey: strings.TrimSpace(os.Getenv("MARS_RAG_API_KEY")),
+		RAGMode:   normRAGMode(env("MARS_RAG_MODE", "tool")),
+		RAGTopK:   envInt("MARS_RAG_TOP_K", 5),
+
 		ProjectRoot:   root,
 		BasePersist:   base,
 		SessionDir:    filepath.Join(base, "session"),
@@ -142,4 +152,13 @@ func normLang(s string) string {
 		return "zh"
 	}
 	return "en"
+}
+
+func normRAGMode(s string) string {
+	switch lower(strings.TrimSpace(s)) {
+	case "inject", "hybrid":
+		return lower(strings.TrimSpace(s))
+	default:
+		return "tool"
+	}
 }

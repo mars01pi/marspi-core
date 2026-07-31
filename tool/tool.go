@@ -8,6 +8,7 @@ import (
 	"github.com/mars/marspi-core/config"
 	"github.com/mars/marspi-core/console"
 	"github.com/mars/marspi-core/memory"
+	"github.com/mars/marspi-core/rag"
 	"github.com/mars/marspi-core/skill"
 )
 
@@ -102,7 +103,18 @@ func NewRegistry(cfg *config.Config, host console.Host, mem *memory.Manager, ski
 	r.Register(&webSearchTool{})
 	r.Register(image)
 	r.Register(&attemptCompletionTool{})
+	if ret := knowledgeFromConfig(cfg); ret != nil {
+		r.RegisterKnowledge(ret, cfg.RAGTopK)
+	}
 	return r
+}
+
+// knowledgeFromConfig 在配置了 MARS_RAG_URL 时构建 HTTPRetriever。
+func knowledgeFromConfig(cfg *config.Config) rag.Retriever {
+	if cfg == nil || cfg.RAGURL == "" {
+		return nil
+	}
+	return rag.NewHTTPRetriever(cfg.RAGURL, cfg.RAGAPIKey, 0)
 }
 
 // Register 追加一个工具，保持注册顺序（顺序影响 schema 顺序）。
