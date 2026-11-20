@@ -3,6 +3,7 @@
 package agentctx
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"time"
@@ -13,7 +14,9 @@ import (
 
 // Manager 保存并维护会话消息。
 type Manager struct {
-	Messages         []llm.Message
+	Messages []llm.Message
+	// CompactPrompt 可由上层覆盖历史摘要要求，空值沿用内置摘要模板。
+	CompactPrompt    string
 	whiteToolList    map[string]bool
 	autoThreshold    int
 	autoDisabled     bool
@@ -181,9 +184,20 @@ func (m *Manager) Backup(path string) {
 
 // PrepareForAPI 执行压缩并返回可发送的消息（含运行时注入），对齐 prepare_for_api。
 func (m *Manager) PrepareForAPI() []llm.Message {
+	messages, _ := m.PrepareForAPIContext(context.Background(), llm.RequestOptions{})
+	return messages
+}
+
+// PrepareForAPIContext 将取消信号及请求预算传递到自动压缩的模型调用。
+func (m *Manager) PrepareForAPIContext(ctx context.Context, options llm.RequestOptions) ([]llm.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	m.microCompact()
 	before := m.TotalTokens()
-	m.autoCompactIfNeeded()
+	if err := m.autoCompactIfNeeded(ctx, options); err != nil {
+		return nil, err
+	}
 	after := m.TotalTokens()
 	if before > after {
 		m.reporter.CompactStatus(before, after, m.maxContext, "auto")
@@ -191,7 +205,7 @@ func (m *Manager) PrepareForAPI() []llm.Message {
 	out := make([]llm.Message, 0, len(m.Messages)+len(m.runtimeInjection))
 	out = append(out, m.Messages...)
 	out = append(out, m.runtimeInjection...)
-	return out
+	return out, nil
 }
 
 func itoa64(n int64) string {

@@ -48,8 +48,15 @@ func normalizeToolCalls(message Message) []ToolCall {
 		fn, _ := tc["function"].(map[string]any)
 		argsStr, _ := fn["arguments"].(string)
 		args := map[string]any{}
+		argsErr := ""
 		if argsStr != "" {
-			_ = json.Unmarshal([]byte(argsStr), &args)
+			if err := json.Unmarshal([]byte(argsStr), &args); err != nil {
+				argsErr = err.Error()
+			} else if args == nil {
+				argsErr = "expected arguments object"
+			}
+		} else if value, exists := fn["arguments"]; exists && value != "" {
+			argsErr = "expected arguments JSON string"
 		}
 		name, _ := fn["name"].(string)
 		id, _ := tc["id"].(string)
@@ -57,7 +64,7 @@ func normalizeToolCalls(message Message) []ToolCall {
 		if typ == "" {
 			typ = "function"
 		}
-		calls = append(calls, ToolCall{ID: id, Type: typ, Name: name, Arguments: args})
+		calls = append(calls, ToolCall{ID: id, Type: typ, Name: name, Arguments: args, ArgumentsError: argsErr})
 	}
 	return calls
 }

@@ -68,24 +68,3 @@ func (t *bashTool) RunCtx(ctx context.Context, _ ExecutionMeta, args map[string]
 	}
 	return OK(res)
 }
-
-// attemptCompletionTool 表示任务完成并给出最终结果。
-type attemptCompletionTool struct {
-	Base
-}
-
-func (t *attemptCompletionTool) Name() string { return "attempt_completion" }
-func (t *attemptCompletionTool) Description() string {
-	return "Indicate that the task is complete and provide the final result/answer to the user"
-}
-func (t *attemptCompletionTool) PreviewLines() int { return 500 }
-func (t *attemptCompletionTool) PreviewWidth() int { return 500 }
-func (t *attemptCompletionTool) Params() []Param {
-	return []Param{
-		{"result", "string", "The final result or summary of the completed task"},
-	}
-}
-func (t *attemptCompletionTool) Run(args map[string]any) Result {
-	r, _ := argStr(args, "result")
-	return OK(r)
-}

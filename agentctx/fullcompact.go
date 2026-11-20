@@ -1,9 +1,10 @@
 package agentctx
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"strings"
-	"time"
 
 	"github.com/mars/marspi-core/llm"
 )
@@ -28,16 +29,31 @@ Output in <analysis>...</analysis><summary>...</summary> format.`
 func (m *Manager) FullCompact() error { return m.fullCompact() }
 
 func (m *Manager) fullCompact() error {
+	return m.FullCompactContext(context.Background(), llm.RequestOptions{})
+}
+
+// FullCompactContext 使用与主调用一致的取消信号和请求预算生成摘要。
+func (m *Manager) FullCompactContext(ctx context.Context, options llm.RequestOptions) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if m.provider == nil {
 		return errors.New("full compact err: no provider")
 	}
 	beforeLen := len(m.Messages)
-	m.AppendUser(fullCompactPrompt)
-	raw, err := llm.Request(m.provider.APIURL(), m.provider.BuildBody(m.Messages, nil),
-		m.provider.Headers(), 300*time.Second, 3)
+	prompt := m.CompactPrompt
+	if prompt == "" {
+		prompt = fullCompactPrompt
+	}
+	m.AppendUser(prompt)
+	timeout, retries := options.Limits()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	raw, err := llm.RequestContext(ctx, m.provider.APIURL(), m.provider.BuildBody(m.Messages, nil),
+		m.provider.Headers(), timeout, retries)
 	if err != nil {
 		m.Messages = m.Messages[:beforeLen]
-		return errors.New("full compact err: " + err.Error())
+		return fmt.Errorf("full compact err: %w", err)
 	}
 	resp := m.provider.ParseResponse(raw)
 	summary := compactSummaryText(resp)

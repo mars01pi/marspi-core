@@ -4,16 +4,16 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"time"
 
 	"github.com/mars/marspi-core/llm"
 	"github.com/mars/marspi-core/logx"
 )
 
-const llmTimeout = 300 * time.Second
-
 // callLLM 发起一次模型请求（流式或非流式），并 emit 对应 message 事件。
 func (r *Runner) callLLM(runCtx context.Context, msgs []llm.Message, tools []map[string]any, iteration int) (llm.Response, error) {
+	timeout, retries := r.RequestOptions.Limits()
+	runCtx, cancel := context.WithTimeout(runCtx, timeout)
+	defer cancel()
 	r.emit(Event{Type: EventMessageStart, Iteration: iteration})
 
 	var resp llm.Response
@@ -22,13 +22,13 @@ func (r *Runner) callLLM(runCtx context.Context, msgs []llm.Message, tools []map
 
 	if r.Stream {
 		resp, streamed, err = r.requestStream(runCtx, msgs, tools, iteration)
-		if err != nil && !errors.Is(err, context.Canceled) {
+		if err != nil && retries > 0 && runCtx.Err() == nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			logx.Debugf("stream failed, fallback blocking: %v", err)
-			resp, err = r.requestBlocking(runCtx, msgs, tools)
+			resp, err = r.requestBlocking(runCtx, msgs, tools, retries-1)
 			streamed = false
 		}
 	} else {
-		resp, err = r.requestBlocking(runCtx, msgs, tools)
+		resp, err = r.requestBlocking(runCtx, msgs, tools, retries)
 	}
 
 	if err != nil {
@@ -50,9 +50,10 @@ func (r *Runner) callLLM(runCtx context.Context, msgs []llm.Message, tools []map
 	return resp, nil
 }
 
-func (r *Runner) requestBlocking(runCtx context.Context, msgs []llm.Message, tools []map[string]any) (llm.Response, error) {
+func (r *Runner) requestBlocking(runCtx context.Context, msgs []llm.Message, tools []map[string]any, retries int) (llm.Response, error) {
+	timeout, _ := r.RequestOptions.Limits()
 	raw, err := llm.RequestContext(runCtx, r.Provider.APIURL(), r.Provider.BuildBody(msgs, tools),
-		r.Provider.Headers(), llmTimeout, 3)
+		r.Provider.Headers(), timeout, retries)
 	if err != nil {
 		return llm.Response{}, err
 	}
@@ -60,10 +61,11 @@ func (r *Runner) requestBlocking(runCtx context.Context, msgs []llm.Message, too
 }
 
 func (r *Runner) requestStream(runCtx context.Context, msgs []llm.Message, tools []map[string]any, iteration int) (llm.Response, bool, error) {
+	timeout, _ := r.RequestOptions.Limits()
 	streamed := false
 	var reasoning, content strings.Builder
 	resp, err := llm.StreamChat(runCtx, r.Provider.APIURL(), r.Provider.BuildBody(msgs, tools),
-		r.Provider.Headers(), llmTimeout, func(ch llm.StreamChunk) error {
+		r.Provider.Headers(), timeout, func(ch llm.StreamChunk) error {
 			if ch.Done {
 				return nil
 			}

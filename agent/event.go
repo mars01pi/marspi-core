@@ -41,6 +41,8 @@ const (
 // Event 是 loop 对外广播的统一事件载体。
 type Event struct {
 	Type EventType
+	// Result 仅在 run_end 提供，与 Run 返回值一致。
+	Result *RunResult
 
 	UserInput string
 	Iteration int

@@ -11,6 +11,7 @@ type RunMeta struct {
 	Success      bool
 	Denied       bool
 	Canceled     bool
+	EndTurn      bool
 	PreviewLines []string
 }
 
@@ -44,6 +45,8 @@ func (r *Registry) ExecuteQuietCtx(ctx context.Context, em ExecutionMeta, name s
 	defer func() {
 		if rec := recover(); rec != nil {
 			r.host.EndSpinner()
+			content = fmt.Sprintf("error: tool %s panicked: %v", name, rec)
+			meta = RunMeta{PreviewLines: []string{content.(string)}}
 		}
 	}()
 
@@ -72,8 +75,11 @@ func (r *Registry) ExecuteQuietCtx(ctx context.Context, em ExecutionMeta, name s
 	}
 
 	display := formatResultDisplay(result.Content)
+	canceled := ctx.Err() != nil
 	return result.Content, RunMeta{
-		Success:      result.Success,
+		Success:      result.Success && !canceled,
+		Canceled:     canceled,
+		EndTurn:      result.Success && result.EndTurn && !canceled,
 		PreviewLines: FormatResultPreview(t, display),
 	}
 }

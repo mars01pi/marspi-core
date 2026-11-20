@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/mars/marspi-core/agentctx"
 	"github.com/mars/marspi-core/llm"
@@ -13,16 +14,19 @@ import (
 )
 
 // ErrMissingAPIKey is returned when the provider has no API key configured.
-var ErrMissingAPIKey = errors.New("MARS_KEY is not set")
+var ErrMissingAPIKey = errors.New("model API key is not configured")
 
 // Runner 承载运行一次 agent_loop 所需的依赖。
 type Runner struct {
-	Provider   llm.Provider
-	Registry   *tool.Registry
-	Events     *Emitter
-	MaxContext int
-	MaxIter    int
-	Stream     bool // MARS_STREAM
+	Provider       llm.Provider
+	Registry       *tool.Registry
+	Events         *Emitter
+	MaxContext     int
+	MaxIter        int
+	Stream         bool // MARS_STREAM
+	RequestOptions llm.RequestOptions
+	// RunTimeout 限制整个运行（含压缩、模型调用和支持 context 的工具），0 表示仅依赖调用方 context。
+	RunTimeout time.Duration
 	// ToolMeta optionally builds execution metadata for each tool call.
 	// If nil, tools still receive runCtx cancellation via ExecuteQuietCtx.
 	ToolMeta func(ctx context.Context, toolName, toolCallID string) tool.ExecutionMeta
@@ -35,18 +39,49 @@ func (r *Runner) Loop(ctx *agentctx.Manager, ctxFilePath, userInput string) {
 }
 
 // LoopCtx 与 Loop 相同，但可通过 ctx 在迭代间隙取消，并返回终止原因。
-// 正常完成（含 attempt_completion / stop）返回 nil；取消返回 context 错误。
+// 正常结束返回 nil；达到迭代上限返回 ErrMaxIterations，取消或超时返回 context 错误。
 func (r *Runner) LoopCtx(runCtx context.Context, ctx *agentctx.Manager, ctxFilePath, userInput string) error {
+	_, err := r.Run(runCtx, ctx, userInput)
+	if ctxFilePath != "" && ctx != nil {
+		if saveErr := ctx.Save(ctxFilePath); saveErr != nil {
+			return errors.Join(err, fmt.Errorf("save session: %w", saveErr))
+		}
+	}
+	return err
+}
+
+// Run 运行一轮并返回明确的结束状态，不读写会话文件、不装配默认 prompt。
+// Runner 与 Manager 由调用方独占使用，不支持同实例并发运行。
+func (r *Runner) Run(runCtx context.Context, ctx *agentctx.Manager, userInput string) (out RunResult, runErr error) {
+	if r.RunTimeout > 0 {
+		var cancel context.CancelFunc
+		runCtx, cancel = context.WithTimeout(runCtx, r.RunTimeout)
+		defer cancel()
+	}
+	out.StopReason = StopError
+	r.emit(Event{Type: EventRunStart, UserInput: userInput})
+	defer func() {
+		if errors.Is(runErr, context.Canceled) {
+			out.StopReason = StopCanceled
+		} else if errors.Is(runErr, context.DeadlineExceeded) {
+			out.StopReason = StopTimeout
+		}
+		result := out
+		r.emit(Event{Type: EventRunEnd, Result: &result})
+	}()
+	if ctx == nil || r.Provider == nil {
+		return out, errors.New("agent requires a context manager and provider")
+	}
 	ctx.AppendUser(userInput)
 	tools := []map[string]any(nil)
 	if r.Registry != nil {
-		tools = r.Registry.Schemas()
+		tools, runErr = r.Registry.SchemasChecked()
+		if runErr != nil {
+			return out, runErr
+		}
 	}
 	logx.Debugf("agent loop start: model=%s tools=%d stream=%v", r.Provider.Model(), len(tools), r.Stream)
 
-	r.emit(Event{Type: EventRunStart, UserInput: userInput})
-
-	var runErr error
 	iteration := 0
 	for {
 		if err := runCtx.Err(); err != nil {
@@ -55,17 +90,22 @@ func (r *Runner) LoopCtx(runCtx context.Context, ctx *agentctx.Manager, ctxFileP
 			break
 		}
 		if strings.TrimSpace(r.Provider.APIKey()) == "" {
-			msg := "MARS_KEY is not set (required)\n  export MARS_KEY=sk-your-key"
-			r.emit(Event{Type: EventError, Text: msg})
+			r.emit(Event{Type: EventError, Text: ErrMissingAPIKey.Error()})
 			runErr = ErrMissingAPIKey
 			break
 		}
 
 		iteration++
+		out.Iterations = iteration
 		r.emit(Event{Type: EventTurnStart, Iteration: iteration})
 		r.emit(Event{Type: EventLLMStart, Text: llmSpinnerText()})
 
-		msgs := ctx.PrepareForAPI()
+		msgs, prepareErr := ctx.PrepareForAPIContext(runCtx, r.RequestOptions)
+		if prepareErr != nil {
+			r.emit(Event{Type: EventLLMEnd, Iteration: iteration, ContextTokens: ctx.TotalTokens(), MaxContext: r.MaxContext})
+			runErr = prepareErr
+			break
+		}
 		logx.Debugf("request iteration=%d messages=%d", iteration, len(msgs))
 
 		resp, err := r.callLLM(runCtx, msgs, tools, iteration)
@@ -83,6 +123,8 @@ func (r *Runner) LoopCtx(runCtx context.Context, ctx *agentctx.Manager, ctxFileP
 			break
 		}
 
+		out.Content = resp.Content
+		out.FinishReason = resp.FinishReason
 		if resp.FinishReason == "error" {
 			r.emit(Event{Type: EventError, Text: resp.Content})
 			runErr = fmt.Errorf("model error: %s", resp.Content)
@@ -99,43 +141,53 @@ func (r *Runner) LoopCtx(runCtx context.Context, ctx *agentctx.Manager, ctxFileP
 			break
 		}
 
-		if resp.FinishReason == "stop" {
-			break
-		}
 		if resp.HasToolCalls {
 			completed := false
 			for _, tc := range resp.ToolCalls {
-				if err := runCtx.Err(); err != nil {
-					r.emit(Event{Type: EventWarn, Text: "Stopped."})
-					runErr = err
-					completed = true
-					break
+				// 已结束或取消时补齐剩余调用的结果，不执行其副作用。
+				if completed || runCtx.Err() != nil {
+					ctx.AppendTool(tc.ID, tc.Name, "error: tool skipped because the run ended")
+					continue
 				}
 				logx.Debugf("tool call: %s", tc.Name)
 				result, done := r.executeTool(runCtx, iteration, tc)
 				ctx.AppendTool(tc.ID, tc.Name, result)
 				if done {
 					completed = true
-					break
+					out.StopReason = StopCompleted
+					out.Output = result
+					if text, ok := result.(string); ok {
+						out.Content = text
+					}
 				}
+			}
+			if err := runCtx.Err(); err != nil {
+				runErr = err
+				break
 			}
 			if completed {
 				break
 			}
 		} else {
 			logx.Debugf("loop exit: finish_reason=%q no tool calls", resp.FinishReason)
+			if resp.FinishReason == "stop" {
+				out.StopReason = StopModel
+			} else {
+				runErr = fmt.Errorf("model ended without completing the turn: finish_reason=%q", resp.FinishReason)
+			}
 			break
 		}
-		if iteration == r.MaxIter {
+		if r.MaxIter > 0 && iteration >= r.MaxIter {
+			out.StopReason = StopMaxIterations
+			runErr = ErrMaxIterations
 			break
 		}
 	}
 
-	r.emit(Event{Type: EventRunEnd})
-	if ctxFilePath != "" {
-		_ = ctx.Save(ctxFilePath)
+	if runErr == nil {
+		runErr = runCtx.Err()
 	}
-	return runErr
+	return out, runErr
 }
 
 func (r *Runner) emit(ev Event) {
@@ -149,10 +201,3 @@ func formatEmptyResponse(resp llm.Response, model string) string {
 }
 
 func llmSpinnerText() string { return "Request..." }
-
-func toolResultOK(result any) bool {
-	if s, ok := result.(string); ok {
-		return !strings.HasPrefix(s, "error:") && !strings.HasPrefix(s, "run tool ")
-	}
-	return true
-}

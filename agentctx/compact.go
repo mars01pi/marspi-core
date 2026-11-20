@@ -1,7 +1,9 @@
 package agentctx
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"github.com/mars/marspi-core/llm"
@@ -138,26 +140,30 @@ func toInt64(v any) (int64, bool) {
 }
 
 // autoCompactIfNeeded 依次尝试三级压缩直到低于阈值，对齐 auto_compact_if_needed。
-func (m *Manager) autoCompactIfNeeded() {
+func (m *Manager) autoCompactIfNeeded(ctx context.Context, options llm.RequestOptions) error {
 	if m.autoDisabled || m.underThreshold() {
-		return
+		return nil
 	}
 	m.sessionMemoryCompact(10, 200)
 	if m.underThreshold() {
-		return
+		return nil
 	}
 	m.compactConversation(8)
 	if m.underThreshold() {
-		return
+		return nil
 	}
 	if m.continuousFails >= m.maxFailures {
-		return
+		return nil
 	}
-	if err := m.fullCompact(); err != nil {
+	if err := m.FullCompactContext(ctx, options); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
 		m.continuousFails++
 	} else {
 		m.continuousFails = 0
 	}
+	return nil
 }
 
 // sessionMemoryCompact 压缩旧轮次的 tool/assistant/reasoning，对齐 session_memory_compact。

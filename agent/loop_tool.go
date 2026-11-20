@@ -15,6 +15,9 @@ func validateToolCall(tc llm.ToolCall) error {
 	if strings.TrimSpace(tc.Name) == "" {
 		return errors.New("empty tool name")
 	}
+	if tc.ArgumentsError != "" {
+		return errors.New(tc.ArgumentsError)
+	}
 	if tc.Arguments == nil {
 		return nil
 	}
@@ -29,11 +32,14 @@ func validateToolCall(tc llm.ToolCall) error {
 	return nil
 }
 
-// executeTool 校验、执行单个 tool call 并 emit tool_* 事件；completed 表示 attempt_completion 结束 loop。
+// executeTool 校验、执行单个工具并广播事件；completed 由成功结果的 EndTurn 决定。
 func (r *Runner) executeTool(runCtx context.Context, iteration int, tc llm.ToolCall) (result any, completed bool) {
 	preview := ""
-	if t, ok := r.Registry.Get(tc.Name); ok {
-		preview = t.Preview(tc.Arguments)
+	validationErr := validateToolCall(tc)
+	if validationErr == nil && r.Registry != nil {
+		if t, ok := r.Registry.Get(tc.Name); ok {
+			preview = safeToolPreview(t, tc.Arguments)
+		}
 	}
 
 	r.emit(Event{
@@ -45,8 +51,11 @@ func (r *Runner) executeTool(runCtx context.Context, iteration int, tc llm.ToolC
 		ToolPreview: preview,
 	})
 
-	if err := validateToolCall(tc); err != nil {
-		errResult := "error: invalid tool arguments: " + err.Error()
+	if validationErr != nil || r.Registry == nil {
+		errResult := "error: no tool registry configured"
+		if validationErr != nil {
+			errResult = "error: invalid tool arguments: " + validationErr.Error()
+		}
 		r.emit(Event{
 			Type:            EventToolEnd,
 			Iteration:       iteration,
@@ -67,7 +76,7 @@ func (r *Runner) executeTool(runCtx context.Context, iteration int, tc llm.ToolC
 	}
 
 	content, runMeta := r.Registry.ExecuteQuietCtx(runCtx, meta, tc.Name, tc.Arguments)
-	ok := runMeta.Success && !runMeta.Denied && !runMeta.Canceled && toolResultOK(content)
+	ok := runMeta.Success && !runMeta.Denied && !runMeta.Canceled
 
 	r.emit(Event{
 		Type:            EventToolEnd,
@@ -79,11 +88,17 @@ func (r *Runner) executeTool(runCtx context.Context, iteration int, tc llm.ToolC
 		ToolResultLines: runMeta.PreviewLines,
 	})
 
-	if tc.Name == "attempt_completion" {
+	if ok && runMeta.EndTurn {
 		if s, ok := content.(string); ok && s != "" {
 			r.emit(Event{Type: EventMessageEnd, Content: s})
 		}
 		return content, true
 	}
 	return content, false
+}
+
+func safeToolPreview(t tool.Tool, args map[string]any) (preview string) {
+	// 预览不应阻止工具自行校验缺失或类型错误的参数。
+	defer func() { _ = recover() }()
+	return t.Preview(args)
 }

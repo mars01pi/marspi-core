@@ -13,6 +13,8 @@ type ToolCall struct {
 	Type      string
 	Name      string
 	Arguments map[string]any
+	// ArgumentsError 保留模型原始参数解析错误，防止错误入参被当成空对象执行。
+	ArgumentsError string
 }
 
 // Response 是解析后的模型响应，对齐 parse_response 的返回结构。

@@ -4,6 +4,8 @@ package tool
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 
 	"github.com/mars/marspi-core/config"
 	"github.com/mars/marspi-core/console"
@@ -17,6 +19,8 @@ type Result struct {
 	Success bool
 	Content any // 通常是 string；view_image 返回 image 结构
 	Extra   map[string]any
+	// EndTurn 表示成功后结束当前轮次；业务任务是否完成由上层判断。
+	EndTurn bool
 }
 
 // OK 构造成功结果。
@@ -52,9 +56,16 @@ type Tool interface {
 	PreviewWidth() int
 }
 
+// InputSchemaTool 可提供完整 JSON Schema；未实现时仍使用 Params。
+// schema 仅描述模型入参，执行时的业务校验仍由工具负责。
+type InputSchemaTool interface {
+	InputSchema() map[string]any
+}
+
 // Base 提供 Tool 接口的默认实现，内置工具通过嵌入复用。
 type Base struct{}
 
+func (Base) Params() []Param             { return nil }
 func (Base) Before(map[string]any)       {}
 func (Base) Confirm(map[string]any) bool { return true }
 func (Base) UseSpinner() bool            { return false }
@@ -80,14 +91,8 @@ type Registry struct {
 // NewRegistry 构建注册表并注册全部内置工具。
 // host 可为 nil（使用 console.Nop），便于无 UI / 测试场景。
 func NewRegistry(cfg *config.Config, host console.Host, mem *memory.Manager, skills *skill.Manager) *Registry {
-	if host == nil {
-		host = console.Nop{}
-	}
-	r := &Registry{
-		host:         host,
-		tools:        map[string]Tool{},
-		builtinTools: map[string]Tool{},
-	}
+	r := NewEmptyRegistry(host)
+	host = r.host
 	c := &ctx{root: cfg.ProjectRoot, console: host}
 	image := &viewImageTool{c: c}
 	// 注册顺序对齐 mangopi 的 TOOLS 列表
@@ -102,11 +107,24 @@ func NewRegistry(cfg *config.Config, host console.Host, mem *memory.Manager, ski
 	r.Register(&appendMemoryTool{mem: mem})
 	r.Register(&webSearchTool{})
 	r.Register(image)
-	r.Register(&attemptCompletionTool{})
+	r.Register(NewAttemptCompletionTool())
 	if ret := knowledgeFromConfig(cfg); ret != nil {
 		r.RegisterKnowledge(ret, cfg.RAGTopK)
 	}
 	return r
+}
+
+// NewEmptyRegistry 构建不带内置工具的注册表，供上层按需注册能力。
+// host 为 nil 时不输出 UI，也不会读取配置或环境变量。
+func NewEmptyRegistry(host console.Host) *Registry {
+	if host == nil {
+		host = console.Nop{}
+	}
+	return &Registry{
+		host:         host,
+		tools:        map[string]Tool{},
+		builtinTools: map[string]Tool{},
+	}
 }
 
 // knowledgeFromConfig 在配置了 MARS_RAG_URL 时构建 HTTPRetriever。
@@ -197,12 +215,26 @@ func (r *Registry) View(allowlist []string) *Registry {
 func (r *Registry) Names() []string { return append([]string(nil), r.order...) }
 
 // Schemas 生成 OpenAI function-calling 的 tools 数组。
+// 自定义 schema 无法编码时 panic；需要处理配置错误的调用方使用 SchemasChecked。
 func (r *Registry) Schemas() []map[string]any {
-	out := make([]map[string]any, 0, len(r.order))
-	for _, name := range r.order {
-		out = append(out, schemaOf(r.tools[name]))
+	out, err := r.SchemasChecked()
+	if err != nil {
+		panic(err)
 	}
 	return out
+}
+
+// SchemasChecked 与 Schemas 相同，但返回自定义 schema 的配置错误，供嵌入式运行时处理。
+func (r *Registry) SchemasChecked() ([]map[string]any, error) {
+	out := make([]map[string]any, 0, len(r.order))
+	for _, name := range r.order {
+		schema, err := checkedSchemaOf(r.tools[name])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, schema)
+	}
+	return out, nil
 }
 
 func (r *Registry) rebuildIndex() {
@@ -229,6 +261,29 @@ func (r *Registry) rebuildIndex() {
 
 // schemaOf 依据 Tool.Params 生成单个 function schema，对齐 ToolBase.schema。
 func schemaOf(t Tool) map[string]any {
+	schema, err := checkedSchemaOf(t)
+	if err != nil {
+		panic(err)
+	}
+	return schema
+}
+
+func checkedSchemaOf(t Tool) (map[string]any, error) {
+	if st, ok := t.(InputSchemaTool); ok {
+		// 每次返回独立 JSON 值，调用方修改 schema 不会污染工具定义。
+		raw, err := json.Marshal(st.InputSchema())
+		if err != nil {
+			return nil, fmt.Errorf("invalid input schema for %s: %w", t.Name(), err)
+		}
+		var schema map[string]any
+		if err := json.Unmarshal(raw, &schema); err != nil || schema == nil {
+			return nil, fmt.Errorf("invalid input schema for %s: expected object schema", t.Name())
+		}
+		if typ, exists := schema["type"]; exists && typ != "object" {
+			return nil, fmt.Errorf("invalid input schema for %s: expected object schema", t.Name())
+		}
+		return functionSchema(t, schema), nil
+	}
 	properties := map[string]any{}
 	required := []string{}
 	for _, p := range t.Params() {
@@ -246,16 +301,18 @@ func schemaOf(t Tool) map[string]any {
 			required = append(required, p.Name)
 		}
 	}
+	return functionSchema(t, map[string]any{
+		"type": "object", "properties": properties, "required": required,
+	}), nil
+}
+
+func functionSchema(t Tool, parameters map[string]any) map[string]any {
 	return map[string]any{
 		"type": "function",
 		"function": map[string]any{
 			"name":        t.Name(),
 			"description": t.Description(),
-			"parameters": map[string]any{
-				"type":       "object",
-				"properties": properties,
-				"required":   required,
-			},
+			"parameters":  parameters,
 		},
 	}
 }
