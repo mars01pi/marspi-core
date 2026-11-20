@@ -1,0 +1,91 @@
+name: Create Version Tag
+run-name: Tag ${{ inputs.version }} by @${{ github.actor }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号，例如 v0.1.0（支持 v0/v1 正式版本）"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: create-version-tag
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate:
+    name: Validate and Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate version and branch
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::Version tags must be created from main."
+            exit 1
+          fi
+          # 当前 module 路径没有 /v2 后缀，只允许 v0/v1 正式版本。
+          if [[ ! "$VERSION" =~ ^v(0|1)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Expected a version such as v0.1.0 or v1.0.0."
+            exit 1
+          fi
+          if git show-ref --verify --quiet "refs/tags/$VERSION"; then
+            echo "::error::The version tag already exists."
+            exit 1
+          fi
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        run: go test -race ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+  tag:
+    name: Create Tag
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout tested commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Create and push annotated tag
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag --annotate "$VERSION" "$GITHUB_SHA" --message "Release $VERSION"
+          git push origin "refs/tags/$VERSION:refs/tags/$VERSION"
+          printf 'Created `%s` at `%s`.\n' "$VERSION" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
