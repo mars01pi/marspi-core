@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test · Go ${{ matrix.go-version }}
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: ['1.25.x', '1.26.x']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+      - name: Build
+        run: go build -mod=readonly ./...
+      - name: Test
+        run: go test -race -mod=readonly ./...
+      - name: Vet
+        run: go vet -mod=readonly ./...
+      - name: Verify runtime dependencies
+        shell: bash
+        run: |
+          dependencies=$(go list -deps ./tool ./agent)
+          if printf '%s\n' "$dependencies" | grep -Eq '^github.com/mars/marspi-core/(config|memory|rag|skill)$'; then
+            printf '%s\n' "$dependencies"
+            exit 1
+          fi

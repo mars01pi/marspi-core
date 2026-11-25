@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/mars/marspi-core/agentctx"
-	"github.com/mars/marspi-core/config"
 	"github.com/mars/marspi-core/llm"
 )
 
@@ -41,18 +40,17 @@ func newMockLLMServer(t *testing.T, handler func(w http.ResponseWriter, r *http.
 func newTestRunner(t *testing.T, srvURL string) (*Runner, *agentctx.Manager, *Emitter) {
 	t.Helper()
 	prov := llm.NewProvider("gpt-4o", srvURL, "test-key")
-	cfg := &config.Config{ProjectRoot: t.TempDir(), MaxContext: 100_000, MaxIter: 5}
 	reg := newTestRegistry(t)
 	emit := NewEmitter()
 	runner := &Runner{
 		Provider:   prov,
 		Registry:   reg,
 		Events:     emit,
-		MaxContext: cfg.MaxContext,
-		MaxIter:    cfg.MaxIter,
+		MaxContext: 100_000,
+		MaxIter:    5,
 		Stream:     false,
 	}
-	ctx := agentctx.New(cfg.MaxContext, prov, reg.Schemas(), nil)
+	ctx := agentctx.New(100_000, prov, reg.Schemas(), nil)
 	return runner, ctx, emit
 }
 

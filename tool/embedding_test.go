@@ -3,8 +3,6 @@ package tool
 import (
 	"context"
 	"testing"
-
-	"github.com/mars/marspi-core/config"
 )
 
 type schemaTool struct {
@@ -44,12 +42,6 @@ func TestEmptyRegistryAndNestedSchema(t *testing.T) {
 	original := schema["properties"].(map[string]any)["changes"].(map[string]any)["items"].(map[string]any)
 	if original["type"] != "object" {
 		t.Fatal("returned schema mutated tool definition")
-	}
-	legacy := NewRegistry(&config.Config{ProjectRoot: t.TempDir()}, nil, nil, nil)
-	for _, name := range []string{"read", "bash", "attempt_completion"} {
-		if _, ok := legacy.Get(name); !ok {
-			t.Fatalf("legacy registry lost %s", name)
-		}
 	}
 }
 

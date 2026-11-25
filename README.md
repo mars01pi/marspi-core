@@ -17,7 +17,7 @@ Core 是 `marspi-cli` 和 `marspi-graph` 的底层依赖。**不依赖任何 TUI
 | [`agent`](./agent/) | **ReAct 主循环**：Runner、事件发射器、LLM 调用 + 工具执行编排 |
 | [`agentctx`](./agentctx/) | **上下文管理**：消息追加、三级压缩（micro / session / full compact） |
 | [`llm`](./llm/) | **LLM Provider 抽象**：OpenAI 兼容 API、流式 SSE、Smart Routing、累加器 |
-| [`tool`](./tool/) | **工具系统**：Tool 接口、Registry、Provider 抽象、10+ 内置工具 |
+| [`tool`](./tool/) | **工具内核**：Tool 接口、Registry、Provider、schema、执行与取消 |
 | [`mcp`](./mcp/) | **MCP 集成**：stdio MCP 服务器管理，tools/list + tools/call 协议 |
 | [`console`](./console/) | **控制台抽象**：Reporter 接口（Nop / Text / TUI），供 CLI 层注入 |
 | [`config`](./config/) | **配置加载**：`MARS_*` 环境变量、持久化路径、版本号 |
@@ -108,26 +108,31 @@ type Provider interface {
 ```go
 type Tool interface {
     Name() string
-    Desc() string
+    Description() string
     Params() []Param
-    Call(ctx, args) Result
+    Run(args map[string]any) Result
+    Before(args map[string]any)
+    Confirm(args map[string]any) bool
+    Preview(args map[string]any) string
+    UseSpinner() bool
+    PreviewLines() int
+    PreviewWidth() int
 }
 ```
 
-### 内置工具（10+）
+宿主工具可嵌入 `tool.Base` 复用可选行为的默认实现。实现 `tool.ContextualTool` 后可通过 `RunCtx` 接收取消信号和 `ExecutionMeta`。
 
-| 工具 | 说明 |
-|------|------|
-| `read` | 读文件（文本/图片） |
-| `write` | 写文件 |
-| `edit` | 编辑文件（精确匹配替换） |
-| `grep` | 文件内容搜索 |
-| `search` | glob 文件搜索 |
-| `bash` | 执行 shell 命令（含安全防护） |
-| `web_search` | 博查 AI Web 搜索 |
-| `view_image` | 查看图片 |
-| `memory_search` / `memory_append` | 长期记忆读写 |
-| `use_skill` | 技能加载调用 |
+### 显式注册工具
+
+```go
+registry := tool.NewEmptyRegistry(host)
+registry.Register(myTool)
+registry.Register(tool.NewAttemptCompletionTool())
+```
+
+注册表初始为空，由宿主决定能力集合。Core 保留通用的 `attempt_completion` 工厂，其成功结果通过 `Result.EndTurn` 结束当前轮次。文件、Shell、Web、图片、Memory、Skill、RAG 工具及其安全策略由 `marspi-cli/internal/tools` 维护。
+
+迁移旧调用时，使用 `NewEmptyRegistry(host)` 加显式 `Register` 替换已移除的 `tool.NewRegistry(cfg, host, mem, skills)`。`Registry.RegisterKnowledge` 也已移除；宿主注入 Retriever 后注册自己的检索工具。`tool` 和 `agent` 的生产依赖不再包含 `config`、`memory`、`rag`、`skill`。
 
 ### Provider 抽象
 
@@ -140,7 +145,7 @@ type Provider interface {
 }
 ```
 
-内置工具通过 `tool.Registry` 注册；MCP 工具通过 `mcp.Provider` 动态加载。
+宿主工具通过 `Registry.Register` 注册；MCP 工具通过 `mcp.Provider` 动态加载，注册表负责刷新和关闭工具提供方。
 
 ---
 
@@ -238,19 +243,13 @@ marspi-core/
 │   ├── stream.go        # 流式累加器
 │   └── types.go         # 消息/响应/工具调用类型
 ├── tool/                # 工具系统
-│   ├── tool.go          # Tool 接口 + Result
-│   ├── registry.go      # 工具注册表
+│   ├── tool.go          # Tool、Result、Registry、schema
 │   ├── provider.go      # Provider 抽象
 │   ├── execute.go       # 执行调度
-│   ├── fs.go            # read / write / edit
-│   ├── grep.go          # grep 搜索
-│   ├── bash.go          # shell 执行（安全防护）
-│   ├── web.go           # web_search
-│   ├── console.go       # 控制台输出
-│   ├── memory.go        # 记忆读写
-│   ├── args.go          # 参数解析
-│   ├── safety.go        # 安全校验
-│   └── extra.go         # 额外工具
+│   ├── execution_meta.go # 取消与编排元数据接口
+│   ├── console.go       # 宿主输出接口别名
+│   ├── preview.go       # 默认参数预览
+│   └── completion.go    # 通用轮次结束工具
 ├── mcp/                 # MCP 集成
 │   ├── provider.go      # MCP Provider（stdio）
 │   └── config.go        # MCP 服务器配置

@@ -4,9 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-
-	"github.com/mars/marspi-core/config"
-	"github.com/mars/marspi-core/console"
 )
 
 type stubProvider struct {
@@ -49,8 +46,7 @@ func TestFormatResultPreviewTruncates(t *testing.T) {
 }
 
 func TestExecuteQuietUnknownTool(t *testing.T) {
-	cfg := &config.Config{ProjectRoot: t.TempDir()}
-	reg := NewRegistry(cfg, console.Nop{}, nil, nil)
+	reg := NewEmptyRegistry(nil)
 	content, meta := reg.ExecuteQuiet("missing", nil)
 	if meta.Success {
 		t.Fatal("expected failure")
@@ -61,8 +57,7 @@ func TestExecuteQuietUnknownTool(t *testing.T) {
 }
 
 func TestExecuteQuietCtxCanceled(t *testing.T) {
-	cfg := &config.Config{ProjectRoot: t.TempDir()}
-	reg := NewRegistry(cfg, console.Nop{}, nil, nil)
+	reg := NewEmptyRegistry(nil)
 	reg.Register(stubTool{name: "echo", lines: 2, width: 20, output: "hi"})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -91,8 +86,7 @@ func (c *ctxAwareTool) RunCtx(ctx context.Context, meta ExecutionMeta, _ map[str
 }
 
 func TestExecuteQuietCtxUsesContextualTool(t *testing.T) {
-	cfg := &config.Config{ProjectRoot: t.TempDir()}
-	reg := NewRegistry(cfg, console.Nop{}, nil, nil)
+	reg := NewEmptyRegistry(nil)
 	ct := &ctxAwareTool{}
 	reg.Register(ct)
 	em := ExecutionMeta{ThreadID: "t1", LeaseEpoch: 7, IdempotencyKey: "abc"}
@@ -106,8 +100,7 @@ func TestExecuteQuietCtxUsesContextualTool(t *testing.T) {
 }
 
 func TestRegistryAddProviderAddsTools(t *testing.T) {
-	cfg := &config.Config{ProjectRoot: t.TempDir()}
-	reg := NewRegistry(cfg, console.Nop{}, nil, nil)
+	reg := NewEmptyRegistry(nil)
 	err := reg.AddProvider(stubProvider{tools: []Tool{stubTool{name: "prov", lines: 2, width: 20, output: "ok"}}})
 	if err != nil {
 		t.Fatalf("AddProvider error: %v", err)
