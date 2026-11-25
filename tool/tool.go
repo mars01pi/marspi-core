@@ -1,5 +1,4 @@
-// Package tool 定义 Agent 可调用的工具体系：Tool 接口、Registry 与内置工具。
-// 对齐 mangopi-cli 的 ToolBase 与 TOOLS 注册表。
+// Package tool 定义 Agent 可调用的工具协议、Registry 与执行内核。
 package tool
 
 import (
@@ -7,11 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/mars/marspi-core/config"
 	"github.com/mars/marspi-core/console"
-	"github.com/mars/marspi-core/memory"
-	"github.com/mars/marspi-core/rag"
-	"github.com/mars/marspi-core/skill"
 )
 
 // Result 是工具执行结果，对齐 ToolBase.ok/fail。
@@ -62,7 +57,7 @@ type InputSchemaTool interface {
 	InputSchema() map[string]any
 }
 
-// Base 提供 Tool 接口的默认实现，内置工具通过嵌入复用。
+// Base 提供 Tool 接口的默认实现，宿主工具通过嵌入复用。
 type Base struct{}
 
 func (Base) Params() []Param             { return nil }
@@ -88,32 +83,6 @@ type Registry struct {
 	providers    []Provider
 }
 
-// NewRegistry 构建注册表并注册全部内置工具。
-// host 可为 nil（使用 console.Nop），便于无 UI / 测试场景。
-func NewRegistry(cfg *config.Config, host console.Host, mem *memory.Manager, skills *skill.Manager) *Registry {
-	r := NewEmptyRegistry(host)
-	host = r.host
-	c := &ctx{root: cfg.ProjectRoot, console: host}
-	image := &viewImageTool{c: c}
-	// 注册顺序对齐 mangopi 的 TOOLS 列表
-	r.Register(&readTool{c: c, image: image})
-	r.Register(&writeTool{c: c})
-	r.Register(&editTool{c: c})
-	r.Register(&searchTool{c: c})
-	r.Register(&grepTool{c: c})
-	r.Register(&bashTool{c: c})
-	r.Register(&useSkillTool{skills: skills})
-	r.Register(&searchMemoryTool{mem: mem})
-	r.Register(&appendMemoryTool{mem: mem})
-	r.Register(&webSearchTool{})
-	r.Register(image)
-	r.Register(NewAttemptCompletionTool())
-	if ret := knowledgeFromConfig(cfg); ret != nil {
-		r.RegisterKnowledge(ret, cfg.RAGTopK)
-	}
-	return r
-}
-
 // NewEmptyRegistry 构建不带内置工具的注册表，供上层按需注册能力。
 // host 为 nil 时不输出 UI，也不会读取配置或环境变量。
 func NewEmptyRegistry(host console.Host) *Registry {
@@ -125,14 +94,6 @@ func NewEmptyRegistry(host console.Host) *Registry {
 		tools:        map[string]Tool{},
 		builtinTools: map[string]Tool{},
 	}
-}
-
-// knowledgeFromConfig 在配置了 MARS_RAG_URL 时构建 HTTPRetriever。
-func knowledgeFromConfig(cfg *config.Config) rag.Retriever {
-	if cfg == nil || cfg.RAGURL == "" {
-		return nil
-	}
-	return rag.NewHTTPRetriever(cfg.RAGURL, cfg.RAGAPIKey, 0)
 }
 
 // Register 追加一个工具，保持注册顺序（顺序影响 schema 顺序）。

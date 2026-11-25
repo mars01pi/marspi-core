@@ -4,8 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/mars/marspi-core/config"
-	"github.com/mars/marspi-core/console"
 	"github.com/mars/marspi-core/llm"
 	"github.com/mars/marspi-core/tool"
 )
@@ -24,8 +22,8 @@ func (echoTool) Run(args map[string]any) tool.Result {
 
 func newTestRegistry(t *testing.T) *tool.Registry {
 	t.Helper()
-	cfg := &config.Config{ProjectRoot: t.TempDir()}
-	reg := tool.NewRegistry(cfg, console.Nop{}, nil, nil)
+	reg := tool.NewEmptyRegistry(nil)
+	reg.Register(tool.NewAttemptCompletionTool())
 	reg.Register(echoTool{})
 	return reg
 }
